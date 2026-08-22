@@ -182,7 +182,21 @@ Create a new folder named `user` to act as your first domain module. Inside `use
 
 
 5. **Run the Application:**
-1. Open your main application file (e.g., `ModularBackendApplication.java`).
-2. Just above the `public static void main` method, you will see a small, clickable **Run | Debug** text (injected by the Java Extension Pack).
-3. Click **Run**.
-4. Watch the terminal at the bottom. You should see the Spring Boot banner, followed by logs confirming Tomcat started on port 8080 and Hibernate successfully connected to PostgreSQL.
+### Method 1: The VS Code UI (Easiest)
+
+1. Open your `ModularApplication.java` file in VS Code.
+2. Do **not** use the terminal to type commands.
+3. Look directly at your code. Right above the line `public static void main(String[] args)`, you should see a tiny, clickable text that says **Run | Debug** (injected by the Java Extension Pack).
+4. Click **Run**. VS Code will automatically compile everything with Maven and start Tomcat.
+
+### Method 2: The Maven Terminal Command
+
+If you prefer using the terminal, you must use the Maven wrapper script included in your project root, not `javac`.
+
+1. Open your terminal in VS Code.
+2. Make sure you are in the very root of your project: `PS F:\modular>`
+3. Run this exact command:
+```powershell
+.\mvnw spring-boot:run
+
+```
