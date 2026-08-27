@@ -1,50 +1,122 @@
-# Tasked — To-Do List Backend
+# Tasked
 
-A REST API backend for a to-do list application, built as a **modular monolith** on Spring Boot 4
-with stateless JWT authentication, refresh-token rotation, and role-based access control.
+A simple to-do list style task management REST API backend. Followed `Modular Monolith Architecture`. Strictly followed `module boundaries`. Used JWT-based Authentication and Authorization with Role Based Access Control, kept 2 tokens `Access Token` and a `Refresh Token` with rotation policy. User can create task with a title, under task title multiple to-dos can be added. Simple CRUD implemented.
 
-> **Current state:** the `shared/` (cross-cutting) and `user/` (identity, auth, RBAC) modules are
-> complete. The task/to-do module is the next feature package to land — it will follow the same
-> `controller / service / entities / repositories / dtos` layout described below.
+| Technology | Version | Role in this project |
+| --- | --- | --- |
+| **Java** | 25 | The language |
+| **Spring Boot** | 4.1.1 | Wires the whole app together — auto-configuration, dependency management, embedded Tomcat on port 8080, and an executable fat JAR via `spring-boot-maven-plugin` |
+| **Spring MVC** | 7.0.9 | The REST layer: `@RestController` endpoints, `@RequestBody` / `@PathVariable` binding, the `@RestControllerAdvice` error handler, and the argument resolver behind `@CurrentUserId` |
+| **Spring Security** | 7.1.1 | The auth pipeline: stateless deny-by-default filter chain, JWT bearer validation via OAuth2 Resource Server, `@PreAuthorize` role checks, BCrypt password hashing, and CORS |
+| **Spring Data JPA** | 4.1.1 | Repositories without implementations — derived queries scoped by owner, `@EntityGraph` fetches, pessimistic locking for token rotation, and auditing for `created_at` / `updated_at` |
+| **Hibernate** | 7.4.5 | The JPA provider underneath: maps the entities to tables, generates the schema (`ddl-auto: update`), and manages the task → todo cascade and orphan removal |
+| **PostgreSQL** | driver 42.7.13 | The datastore. Holds `users`, `tasks` and `todos` |
+| **Jakarta Bean Validation** | API 3.1.1 (Hibernate Validator 9.1.3) | Declarative input rules on the DTOs — `@NotBlank`, `@Email`, `@Size`, `@Pattern`, `@AssertTrue` — so a bad request becomes a 400 with `fieldErrors` before any service code runs |
+
+## Database
+
+Three tables, generated from the entities by Hibernate. `todos` hangs off `tasks` by a real foreign key
+(`task_id`, one-to-many, cascaded and orphan-removed), while `tasks` references its owner by a plain
+`owner_id` UUID — no foreign key to `users`, because modules don't join across each other's tables.
+
+![ERD — users, tasks and todos](docs/res/image.png)
+
+## 1. User module
+
+Registration, login, sign-out, refresh rotation, and role management.
+
+### Endpoints — `/users`
+
+| Endpoint | Access | Job | Returns |
+| --- | --- | --- | --- |
+| `GET /hello` | `USER` | Smoke test | **200** string |
+| `POST /` | anonymous | Register (no tokens issued) | **201** string |
+| `POST /login` | anonymous | Verify credentials, start session | **200** `{ accessToken, refreshToken }` |
+| `POST /refresh-token` | anonymous | Rotate the pair, kill the old token | **200** `{ accessToken, refreshToken }` |
+| `POST /signout` | authenticated | Clear the stored refresh hash | **200** `{ message }` |
+| `GET /me` | authenticated | The caller's own profile | **200** `UserResponse` |
+| `GET /` | `ADMIN` | List all accounts | **200** `UserResponse[]` |
+| `PATCH /{id}/role` | `ADMIN` | Change a role, end that user's session | **200** `UserResponse` |
+
+### Errors
+
+| Status | Cause |
+| --- | --- |
+| **400** | Validation failure (email, password rules, mismatched confirm) · bad JSON or unknown role · non-UUID path id |
+| **401** | Missing/expired token · wrong email *or* password (same message, no enumeration) · invalid or already-rotated refresh token · **reuse detected → session revoked** |
+| **403** | A `USER` token hitting an admin endpoint |
+| **404** | `User not found` |
+| **409** | Email already exists · concurrent rotation collision |
+| **429** | >10 logins or refreshes per minute per IP |
 
 ---
 
-## Architecture
+## 2. Task module
 
-| Aspect | Choice | Notes |
+Tasks and their checklists — one aggregate, cascaded together.
+
+### Endpoints — `/tasks` (all require `USER`)
+
+| Endpoint | Job | Returns |
 | --- | --- | --- |
-| Style | **Modular monolith** (package-by-feature) | One deployable JAR; boundaries enforced at the package level |
-| Module layout | Each feature owns `controller` / `service` / `entities` / `repositories` / `dtos` | A module can be lifted into its own service later without touching siblings |
-| Cross-cutting code | `shared/` package | `auth`, `config`, `exception`, `enums`, `ratelimit` — the only package siblings may depend on |
-| Layering | Controller → Service → Repository → Entity | Controllers stay thin: no `try/catch`, no manual validation, no `ResponseEntity` in services |
-| Boundary rule | Entities never cross the HTTP boundary | DTO records in, DTO records out — `password` / `refreshToken` cannot leak through a serializer |
-| Session model | **Stateless** (`SessionCreationPolicy.STATELESS`) | No `HttpSession`, no sticky sessions, horizontally scalable |
-| Identity propagation | `@CurrentUserId UUID` resolved from the token's `sub` claim | Identity is never read from a path variable, query param, or body |
-| Error model | `@RestControllerAdvice` + filter-chain handlers | One JSON envelope (`ApiErrorResponse`) for *every* failure, including 401/403 raised before the dispatcher |
-| Config binding | Type-safe `@ConfigurationProperties` records, validated at boot | Misconfiguration aborts startup instead of failing at first login |
+| `POST /` | Create a task with its checklist, in one transaction | **201** `TaskResponse` |
+| `GET /` | Page of the caller's tasks, checklists included, in 2 queries | **200** `PageResponse<TaskResponse>` |
+| `GET /{taskId}` | One owned task | **200** `TaskResponse` |
+| `PUT /{taskId}` | Replace title + checklist (reconciled by id; tick states survive renames) | **200** `TaskResponse` |
+| `PATCH /{taskId}/status` | Change status only | **200** `TaskResponse` |
+| `PATCH /{taskId}/todos/{todoId}/done` | Tick / untick one item | **200** `TodoResponse` |
+| `DELETE /{taskId}` | Delete task + its todos | **204** no body |
+
+### Errors
+
+| Status | Cause |
+| --- | --- |
+| **400** | Blank/too-long title or todo name · >100 todos · unknown status · non-UUID path id |
+| **401** | Missing or invalid token |
+| **403** | Role isn't `USER` — **including `ADMIN`** |
+| **404** | `Task not found` (missing *or* owned by someone else) · a todo id that isn't part of this task |
+| **409** | Concurrent write collision |
 
 ---
 
-## Tools & Technologies
+## 3. Shared module
 
-| Category | Technology | Detail / Purpose |
+Cross-cutting infrastructure.
+
+### Types
+
+| Type | What it's for |
+| --- | --- |
+| `ApiErrorResponse` | The one error envelope for the whole API |
+| `PageResponse<T>` | Stable pagination contract, so Spring's `Page` never leaks into the API |
+| `ApiException` + subclasses | `NotFound` 404, `Conflict` 409, `Unauthorized` 401, `TooManyRequests` 429 — services throw without knowing about HTTP |
+| `Role`, `TaskStatus` | The shared enums |
+| `JwtProperties` | Validated config; **startup fails** if the two secrets match or are too short |
+| `@CurrentUserId`, `Policies` | Identity injection and the `@PreAuthorize` expressions, written once |
+
+### Components
+
+| Component | Job | Emits |
 | --- | --- | --- |
-| Language | **Java 25** | Records, pattern matching, `HexFormat` |
-| Framework | **Spring Boot 4.1.1** | Auto-configuration, dependency management, embedded server |
-| Web layer | **Spring Web MVC** (`spring-boot-starter-webmvc`) | REST controllers on the servlet stack |
-| Server | **Embedded Tomcat** | Port `8080` |
-| Build | **Maven** + Maven Wrapper (`./mvnw`) | `spring-boot-maven-plugin` produces an executable fat JAR |
-| Database | **PostgreSQL** | Primary datastore, `runtime`-scoped driver |
-| Data access | **Spring Data JPA** / **Hibernate** | `JpaRepository`, derived queries, `@Query` |
-| Connection pool | **HikariCP** | Spring Boot default |
-| Schema | `ddl-auto: update` | ⚠️ Development convenience — production should use `validate` + Flyway |
-| Auditing | `@EnableJpaAuditing` + `AuditingEntityListener` | `created_at` / `updated_at` populated automatically |
-| Concurrency | `@Version` (optimistic) + `PESSIMISTIC_WRITE` (`SELECT … FOR UPDATE`) | Serialises the compare-and-swap in refresh-token rotation |
-| Validation | **Jakarta Bean Validation** (`spring-boot-starter-validation`) | `@Valid` on DTOs → `MethodArgumentNotValidException` → 400 with `fieldErrors` |
-| Security | **Spring Security** | Filter chain, `@PreAuthorize` method security, `BCryptPasswordEncoder` (cost 11) |
-| Tokens | **OAuth2 Resource Server** + Nimbus JOSE | Stateless HS256 JWT bearer validation, strict issuer/audience/`exp`, zero clock skew |
-| JSON | **Jackson 3** | Bundled with Boot 4; injected into the filter-chain error handlers |
-| Boilerplate | **Project Lombok** | `@Getter/@Setter`, `@Builder`, `@RequiredArgsConstructor`, `@Slf4j` |
-| Logging | **SLF4J + Logback** | Auth events at INFO; admin signup and token reuse at WARN |
-| Observability | **Spring Boot Actuator** | Only `/actuator/health` exposed, `show-details: never` |
-| Testing | **JUnit 5**, **AssertJ**, **Mockito**, **MockMvc** | `@WebMvcTest` slices + `@SpringBootTest` integration flow |
+| `SecurityConfig` | Stateless, deny-by-default filter chain + method security | — |
+| `accessTokenDecoder` | Bearer validation against the *access* secret only, zero clock skew | — |
+| `AuthRateLimitFilter` | 10 req/min per IP on login + refresh, before any BCrypt work | **429** |
+| `JsonAuthenticationEntryPoint` / `JsonAccessDeniedHandler` | Give filter-chain failures the same JSON body as everything else | **401** / **403** |
+| `CurrentUserIdArgumentResolver` | Fills `@CurrentUserId` from the verified `sub` | **401** on a bad payload |
+| `GlobalExceptionHandler` | Maps every dispatcher exception to a status + body | 400/401/403/404/409 |
+| `JwtTokenService`, `TokenSecurityHelper` | Mint/validate tokens; store refresh as `BCrypt(SHA256(token))` | — |
+
+### Error catalog
+
+| Status | Trigger | From |
+| --- | --- | --- |
+| **400** | Bean Validation (adds `fieldErrors`) · unreadable JSON · type mismatch | `GlobalExceptionHandler` |
+| **401** | `UnauthorizedException`, `JwtException` | `GlobalExceptionHandler` |
+| **401** | Missing/invalid bearer token | `JsonAuthenticationEntryPoint` |
+| **403** | `@PreAuthorize` denial | `GlobalExceptionHandler` |
+| **403** | URL-level denial | `JsonAccessDeniedHandler` |
+| **404** / **409** | `NotFoundException` · `ConflictException`, unique-index violation, lock failure | `GlobalExceptionHandler` |
+| **429** | Rate limit exhausted | `AuthRateLimitFilter` |
+
+> Two sets of handlers because `@RestControllerAdvice` only sees what reaches the dispatcher — auth
+> failures happen earlier, in the filter chain.
