@@ -42,8 +42,8 @@ tasked:
     # java.time.Duration (ISO-8601). Short access TTL bounds the damage of a stolen access
     # token, since sign-out cannot revoke one. Long refresh TTL keeps users logged in, and is
     # safe because every use rotates the token and a replay destroys the session.
-    access-ttl: ${JWT_ACCESS_TTL:PT1M}
-    refresh-ttl: ${JWT_REFRESH_TTL:PT2M}
+    access-ttl: ${JWT_ACCESS_TTL:PT10M}
+    refresh-ttl: ${JWT_REFRESH_TTL:PT15M}
 
 cors:
   # Explicit list, not a wildcard: allowCredentials(true) is incompatible with "*".
