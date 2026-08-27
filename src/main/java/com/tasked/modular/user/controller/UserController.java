@@ -52,6 +52,7 @@ public class UserController {
 
     /** Unauthenticated liveness probe, explicitly permitted in {@code SecurityConfig}. */
     @GetMapping("hello")
+    @PreAuthorize(Policies.USER)
     public String getHello() {
         return userService.getHello();
     }
